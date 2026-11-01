@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>USDT Futures Scanner</title>
+<style>
+:root{color-scheme:dark;--bg:#080e19;--panel:#111b2b;--line:#24334a;--muted:#91a0b7;--text:#edf3ff;--green:#28d79a;--red:#ff657a;--blue:#72a7ff;--yellow:#f5c76b}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0c1525,#080e19 45%);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:22px 16px 14px;position:sticky;top:0;background:#0b1220ed;backdrop-filter:blur(12px);z-index:2;border-bottom:1px solid var(--line)}
+h1{font-size:20px;margin:0 0 6px;letter-spacing:.2px}.sub{color:var(--muted);font-size:12px}
+.wrap{max-width:900px;margin:auto;padding:14px 12px 40px}
+.status{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:12px;margin-bottom:12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--yellow);margin-right:7px}.dot.live{background:var(--green)}
+button{border:0;border-radius:10px;background:#2866cf;color:white;padding:11px 15px;font-weight:700;font-size:13px}
+button:disabled{opacity:.55}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px}
+.stat b{display:block;font-size:19px;margin-top:4px}.label{font-size:11px;color:var(--muted)}
+.filters{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+.filters button{background:#17243a;color:#c9d7ee;border:1px solid var(--line);padding:8px 12px}
+.filters button.active{background:#204b85;border-color:#4388e8;color:white}
+.note{font-size:11px;color:var(--muted);line-height:1.5;margin:12px 2px}
+.cards{display:grid;gap:9px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.symbol{font-size:16px;font-weight:800}.side{font-size:11px;font-weight:800;padding:5px 8px;border-radius:7px}
+.long{background:#123d34;color:var(--green)}.short{background:#49202c;color:var(--red)}.wait{background:#30394a;color:#c1ccdc}
+.meta{color:var(--muted);font-size:11px;margin-top:5px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.cell{background:#0c1524;border-radius:8px;padding:8px}.cell span{display:block;color:var(--muted);font-size:10px;margin-bottom:4px}.cell b{font-size:12px;overflow-wrap:anywhere}
+.empty{border:1px dashed #34445d;border-radius:12px;padding:25px 14px;text-align:center;color:var(--muted);line-height:1.6}
+.error{color:var(--red);font-size:12px;margin-top:8px;white-space:pre-wrap}
+footer{color:var(--muted);font-size:10px;text-align:center;margin-top:22px}
+@media(min-width:650px){.cards{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header><div class="wrap" style="padding:0 12px"><h1>USDT 무기한 선물 스캐너</h1><div class="sub">Binance USDⓈ-M Futures · 1분봉 · SMA200 미사용</div></div></header>
+<main class="wrap">
+ <section class="status"><div><span class="dot" id="dot"></span><span id="status">연결 대기 중</span><div class="meta" id="updated">아직 스캔하지 않았습니다</div></div><button id="scan">지금 스캔</button></section>
+ <section class="stats">
+  <div class="stat"><span class="label">감시 종목</span><b id="count">-</b></div>
+  <div class="stat"><span class="label">롱 신호</span><b id="longs" style="color:var(--green)">0</b></div>
+  <div class="stat"><span class="label">숏 신호</span><b id="shorts" style="color:var(--red)">0</b></div>
+ </section>
+ <div class="filters">
+  <button class="active" data-filter="all">전체 신호</button><button data-filter="long">롱</button><button data-filter="short">숏</button>
+ </div>
+ <div class="note">거래량 상위 USDT 무기한 계약을 우선 검사합니다. 구조 돌파(BOS) 후 돌파 가격대 재시험을 감지하며, 손절은 최근 스윙/ATR 기준, 익절은 기본 손익비 1:2로 계산합니다.</div>
+ <section id="cards" class="cards"><div class="empty">스캔을 시작하면 신호가 여기에 표시됩니다.</div></section>
+ <div id="error" class="error"></div>
+ <footer>공개 시장 데이터만 사용 · API 키 불필요 · 60초 자동 갱신<br>신호는 참고용이며 주문을 실행하지 않습니다.</footer>
+</main>
+<script>
+const API='https://fapi.binance.com';
+const MAX_SYMBOLS=45, CONCURRENCY=5, INTERVAL=60000;
+let allSignals=[],filter='all',busy=false,timer=null;
+const $=id=>document.getElementById(id);
+const fmt=n=>Number(n).toLocaleString('en-US',{maximumFractionDigits:8});
+async function get(path){
+ const r=await fetch(API+path,{cache:'no-store'});
+ if(!r.ok) throw new Error('Binance 응답 오류: '+r.status);
+ return r.json();
+}
+function analyze(symbol,ks,quoteVol){
+ const c=ks.slice(0,-1); // 진행 중인 현재 봉 제외
+ if(c.length<35)return null;
+ const highs=c.map(x=>+x[2]),lows=c.map(x=>+x[3]),closes=c.map(x=>+x[4]);
+ const last=c[c.length-1],prev=c.slice(-22,-2);
+ const priorHigh=Math.max(...prev.map(x=>+x[2]));
+ const priorLow=Math.min(...prev.map(x=>+x[3]));
+ const close=+last[4],high=+last[2],low=+last[3];
+ const tr=[];
+ for(let i=Math.max(1,c.length-15);i<c.length;i++){
+  const h=+c[i][2],l=+c[i][3],pc=+c[i-1][4];
+  tr.push(Math.max(h-l,Math.abs(h-pc),Math.abs(l-pc)));
+ }
+ const atr=tr.reduce((a,b)=>a+b,0)/Math.max(1,tr.length);
+ if(!atr||!close)return null;
+ const volNow=+last[5],volAvg=c.slice(-21,-1).reduce((s,x)=>s+(+x[5]),0)/20;
+ const volRatio=volAvg?volNow/volAvg:0;
+ let side=null,level=0,entry=close,sl=0,tp=0,reason='';
+ // Breakout and retest around the prior 20-candle structure level
+ if(close>priorHigh && low<=priorHigh+atr*.22 && close>=priorHigh){
+   side='LONG';level=priorHigh;
+   const swingLow=Math.min(...lows.slice(-8));
+   sl=Math.min(swingLow,level-atr*.65);
+   if(sl>=entry)sl=entry-atr;
+   tp=entry+(entry-sl)*2;
+   reason='상단 BOS 돌파 후 지지 재시험';
+ }else if(close<priorLow && high>=priorLow-atr*.22 && close<=priorLow){
+   side='SHORT';level=priorLow;
+   const swingHigh=Math.max(...highs.slice(-8));
+   sl=Math.max(swingHigh,level+atr*.65);
+   if(sl<=entry)sl=entry+atr;
+   tp=entry-(sl-entry)*2;
+   reason='하단 BOS 이탈 후 저항 재시험';
+ }
+ if(!side)return null;
+ return {symbol,side,entry,sl,tp,level,reason,volRatio,quoteVol,changeTime:+last[6]};
+}
+async function worker(items,fn){
+ let idx=0,out=[];
+ async function run(){while(idx<items.length){const item=items[idx++];try{const v=await fn(item);if(v)out.push(v)}catch(e){}}}
+ await Promise.all(Array.from({length:CONCURRENCY},run));return out;
+}
+async function scan(){
+ if(busy)return;busy=true;$('scan').disabled=true;$('status').textContent='시장 데이터 조회 중…';$('dot').className='dot';$('error').textContent='';
+ try{
+  const [info,tickers]=await Promise.all([get('/fapi/v1/exchangeInfo'),get('/fapi/v1/ticker/24hr')]);
+  const active=new Set(info.symbols.filter(s=>s.status==='TRADING'&&s.contractType==='PERPETUAL'&&s.quoteAsset==='USDT').map(s=>s.symbol));
+  const ranked=tickers.filter(t=>active.has(t.symbol)).sort((a,b)=>(+b.quoteVolume)-(+a.quoteVolume)).slice(0,MAX_SYMBOLS);
+  $('count').textContent=ranked.length;
+  const results=await worker(ranked,async t=>{
+   const k=await get('/fapi/v1/klines?symbol='+t.symbol+'&interval=1m&limit=45');
+   return analyze(t.symbol,k,+t.quoteVolume);
+  });
+  allSignals=results.sort((a,b)=>b.volRatio-a.volRatio);
+  render();$('status').textContent='실시간 스캔 완료';$('dot').className='dot live';
+  $('updated').textContent='마지막 업데이트: '+new Date().toLocaleTimeString('ko-KR');
+ }catch(e){$('status').textContent='연결 실패';$('dot').className='dot';$('error').textContent=e.message+' — 잠시 후 다시 시도해 주세요.';}
+ finally{busy=false;$('scan').disabled=false;}
+}
+function render(){
+ const longs=allSignals.filter(x=>x.side==='LONG').length,shorts=allSignals.length-longs;
+ $('longs').textContent=longs;$('shorts').textContent=shorts;
+ const list=allSignals.filter(x=>filter==='all'||x.side.toLowerCase()===filter);
+ if(!list.length){$('cards').innerHTML='<div class="empty">현재 조건에 맞는 진입 신호가 없습니다.<br>60초마다 자동으로 다시 확인합니다.</div>';return;}
+ $('cards').innerHTML=list.map(x=>`<article class="card">
+  <div class="top"><div class="symbol">${x.symbol.replace('USDT','')}<span class="meta"> / USDT</span></div><span class="side ${x.side.toLowerCase()}">${x.side==='LONG'?'LONG 매수':'SHORT 매도'}</span></div>
+  <div class="meta">${x.reason} · 거래량 ${x.volRatio.toFixed(2)}배 · 24h 거래대금 ${fmt(x.quoteVol)} USDT</div>
+  <div class="grid">
+   <div class="cell"><span>진입 기준가</span><b>${fmt(x.entry)}</b></div>
+   <div class="cell"><span>손절가 (SL)</span><b style="color:var(--red)">${fmt(x.sl)}</b></div>
+   <div class="cell"><span>익절가 (TP · 1:2)</span><b style="color:var(--green)">${fmt(x.tp)}</b></div>
+   <div class="cell"><span>BOS 기준선</span><b>${fmt(x.level)}</b></div>
+   <div class="cell"><span>거래량 / 평균</span><b>${x.volRatio.toFixed(2)}x</b></div>
+   <div class="cell"><span>차트</span><b><a style="color:var(--blue)" target="_blank" rel="noopener" href="https://www.binance.com/en/futures/${x.symbol}">바이낸스 열기 ↗</a></b></div>
+  </div></article>`).join('');
+}
+document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));render()}));
+$('scan').addEventListener('click',scan);
+scan();timer=setInterval(scan,INTERVAL);
+</script>
+</body></html>
